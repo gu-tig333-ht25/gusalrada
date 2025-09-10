@@ -1,4 +1,4 @@
-# flutter_app_ui
+# template
 
 A new Flutter project.
 

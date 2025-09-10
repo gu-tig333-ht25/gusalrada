@@ -1,4 +1,4 @@
-package com.example.flutter_app_ui
+package com.example.template
 
 import io.flutter.embedding.android.FlutterActivity
 
