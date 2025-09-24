@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-
+import 'package:provider/provider.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 void main() {
-  runApp(const TodoApp());
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => TodoStore()..init(),
+      child: const TodoApp(),
+    ),
+  );
 }
 
 class TodoApp extends StatelessWidget {
@@ -25,31 +32,33 @@ class TodoApp extends StatelessWidget {
 
 enum _Filter { all, done, undone }
 
-class TodoHomePage extends StatefulWidget {
-  const TodoHomePage({super.key});
+class TodoStore extends ChangeNotifier {
+  static const _base = 'https://todoapp-api.apps.k8s.gu.se';
+  static const _key = '4b9a2bbe-d660-4ebd-a8b3-e98587cfbaa4';
 
-  @override
-  State<TodoHomePage> createState() => _TodoHomePageState();
-}
-
-class _TodoHomePageState extends State<TodoHomePage> {
-  final TextEditingController _controller = TextEditingController();
-
-  // Samma initialdata som tidigare, men nu som state
-  final List<Map<String, dynamic>> _items = [
-    {"text": "Write a book", "done": false},
-    {"text": "Do homework", "done": false},
-    {"text": "Tidy room", "done": true},
-    {"text": "Watch TV", "done": false},
-    {"text": "Nap", "done": false},
-    {"text": "Shop groceries", "done": false},
-    {"text": "Have fun", "done": false},
-    {"text": "Meditate", "done": false},
-  ];
+  final List<Map<String, dynamic>> _items = [];
 
   _Filter _filter = _Filter.all;
+  Future<void> _reloadFromServer() async {
+    final r = await http.get(Uri.parse('$_base/todos?key=$_key'));
+    if (r.statusCode == 200) {
+      final List data = jsonDecode(r.body);
+      _items
+        ..clear()
+        ..addAll(data.map<Map<String, dynamic>>((e) => {
+          'id': e['id'],
+          'text': e['title'],
+          'done': e['done'] == true,
+        }));
+      notifyListeners();
+    }
+  }
 
-  List<Map<String, dynamic>> get _visibleItems {
+  Future<void> init() async {
+    await _reloadFromServer();
+  }
+
+  List<Map<String, dynamic>> get visibleItems {
     switch (_filter) {
       case _Filter.done:
         return _items.where((e) => e["done"] == true).toList();
@@ -60,35 +69,87 @@ class _TodoHomePageState extends State<TodoHomePage> {
     }
   }
 
+  _Filter get filter => _filter;
+
+  Future<void> addItem(String text) async {
+    final t= text.trim();
+    if (t.isEmpty) return;
+    final res= await http.post(
+      Uri.parse('$_base/todos?key=$_key'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'title': t, 'done': false}),
+    );
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      await _reloadFromServer ();
+    }    
+  }
+
+   Future<void> toggleItem(Map<String, dynamic> item, bool value) async {
+    final id = item['id'] as String?;
+    final text = item['text'] as String;
+    if (id == null) return;
+
+    final res = await http.put(
+      Uri.parse('$_base/todos/$id?key=$_key'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'title': text, 'done': value}),
+    );
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      await _reloadFromServer();
+    }
+  }
+
+  Future<void> removeItem(Map<String, dynamic> item) async {
+    final id = item['id'] as String?;
+    if (id == null) return;
+
+    final res = await http.delete(Uri.parse('$_base/todos/$id?key=$_key'));
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      await _reloadFromServer();
+    }
+  }
+
+  void setFilter(_Filter f) {
+    if (_filter == f) return;
+    _filter = f;
+    notifyListeners();
+  }
+}
+
+class TodoHomePage extends StatefulWidget {
+  const TodoHomePage({super.key});
+
+  @override
+  State<TodoHomePage> createState() => _TodoHomePageState();
+}
+
+class _TodoHomePageState extends State<TodoHomePage> {
+  final TextEditingController _controller = TextEditingController();
+
+  List<Map<String, dynamic>> get _visibleItems =>
+      context.watch<TodoStore>().visibleItems;
+
   void _addItem() {
-    final text = _controller.text.trim();
-    if (text.isEmpty) return;
-    setState(() {
-      _items.insert(0, {"text": text, "done": false});
-      _controller.clear();
-    });
+    context.read<TodoStore>().addItem(_controller.text);
+    _controller.clear();
   }
 
   void _toggleItem(Map<String, dynamic> item, bool? value) {
-    setState(() {
-      item["done"] = value ?? false;
-    });
+    context.read<TodoStore>().toggleItem(item, value ?? false);
   }
 
   void _removeItem(Map<String, dynamic> item) {
-    setState(() {
-      _items.remove(item);
-    });
+    context.read<TodoStore>().removeItem(item);
   }
 
   void _setFilter(_Filter f) {
-    setState(() {
-      _filter = f;
-    });
+    context.read<TodoStore>().setFilter(f);
   }
 
   @override
   Widget build(BuildContext context) {
+    final currentFilter = context.watch<TodoStore>().filter;
+
     return Scaffold(
       backgroundColor: Colors.grey.shade200,
       appBar: AppBar(
@@ -112,7 +173,6 @@ class _TodoHomePageState extends State<TodoHomePage> {
                   ),
                 ),
               ),
-              // "+ ADD" behåller look men gör den klickbar
               InkWell(
                 onTap: _addItem,
                 child: const Padding(
@@ -128,19 +188,19 @@ class _TodoHomePageState extends State<TodoHomePage> {
                   children: [
                     _FilterBox(
                       label: 'all',
-                      selected: _filter == _Filter.all,
+                      selected: currentFilter == _Filter.all,
                       onTap: () => _setFilter(_Filter.all),
                     ),
                     const SizedBox(width: 8),
                     _FilterBox(
                       label: 'done',
-                      selected: _filter == _Filter.done,
+                      selected: currentFilter == _Filter.done,
                       onTap: () => _setFilter(_Filter.done),
                     ),
                     const SizedBox(width: 8),
                     _FilterBox(
                       label: 'undone',
-                      selected: _filter == _Filter.undone,
+                      selected: currentFilter == _Filter.undone,
                       onTap: () => _setFilter(_Filter.undone),
                     ),
                   ],
@@ -177,7 +237,6 @@ class _TodoHomePageState extends State<TodoHomePage> {
               );
             }).toList(),
           ),
-          // Behåll din runda knapp-look men gör den klickbar
           Positioned(
             right: 20,
             bottom: 20,
